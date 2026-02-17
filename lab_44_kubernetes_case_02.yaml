@@ -1,0 +1,102 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-troubleshooting-service-challenge
+  namespace: girus
+  labels:
+    app: girus-lab-template
+data:
+  lab.yaml: |
+    name: kubernetes-troubleshooting-service-challenge
+    title: "Desafio: O Mistério do Serviço Indisponível"
+    description: "Seus Pods estão saudáveis, mas a aplicação está inacessível. Neste desafio, você vai diagnosticar um problema de conectividade no Kubernetes, investigando a relação entre Services, Labels e Selectors para restaurar o acesso."
+    duration: 15m
+    timerEnabled: true
+    maxDuration: 15m
+    image: "linuxtips/girus-kind-single-node:0.1"
+    privileged: true
+    tasks:
+      - name: "A Cena do Crime: A Aplicação Fantasma"
+        description: "Vamos criar um cenário onde os Pods estão perfeitamente saudáveis, mas o Serviço não consegue encontrá-los, tornando a aplicação inacessível."
+        steps:
+          - "Bem-vindo de volta, detetive! Desta vez, o mistério é diferente: os Pods estão vivos e bem, mas a aplicação está incomunicável, como um fantasma na rede."
+          - "Vamos criar um novo namespace para esta investigação:"
+          - "`kubectl create namespace servico-fantasma`"
+          - "Agora, crie um arquivo chamado app-com-erro.yaml usando seu editor de texto. Este manifesto contém um Deployment e um Service, mas com um erro sutil de digitação que quebra a comunicação entre eles."
+          - |
+            ```
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: minha-app-deployment
+              namespace: servico-fantasma
+            spec:
+              replicas: 2
+              selector:
+                matchLabels:
+                  app: minha-app
+              template:
+                metadata:
+                  labels:
+                    app: minha-app
+                spec:
+                  containers:
+                  - name: web
+                    image: nginx
+                    ports:
+                    - containerPort: 80
+            ---
+            apiVersion: v1
+            kind: Service
+            metadata:
+              name: meu-servico
+              namespace: servico-fantasma
+            spec:
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
+            ```
+          - "Com o manifesto criado, vamos aplicar a configuração no cluster:"
+          - "`kubectl apply -f app-com-erro.yaml`"
+          - "Agora, verifique o status dos Pods. Eles devem estar perfeitamente saudáveis."
+          - "`kubectl get pods -n servico-fantasma`"
+          - "Apesar dos Pods estarem 'Running', a aplicação está inacessível. A investigação começa agora."
+        validation:
+          - command: "kubectl get pods -n servico-fantasma -l app=minha-app --no-headers | wc -l"
+            expectedOutput: "2"
+            errorMessage: "O Deployment não criou as 2 réplicas esperadas. Verifique o manifesto."
+          - command: "kubectl get service meu-servico -n servico-fantasma -o jsonpath='{.metadata.name}' 2>/dev/null || echo ''"
+            expectedOutput: "meu-servico"
+            errorMessage: "O Service 'meu-servico' não foi criado. Verifique o manifesto."
+
+      - name: "Pista 1: O Porteiro Desatento (Service e Endpoints)"
+        description: "Investigue o Service e seus Endpoints para encontrar a primeira grande pista sobre o problema de conectividade."
+        steps:
+          - "O Service atua como o porteiro da nossa aplicação. Se ninguém consegue entrar, a primeira coisa a fazer é falar com o porteiro."
+          - "A pista crucial está nos **Endpoints**. Um objeto Endpoint contém a lista de IPs e portas dos Pods que um Service está direcionando. Verifique os endpoints do nosso serviço:"
+          - "`kubectl get endpoints meu-servico -n servico-fantasma`"
+          - "Analise a saída. A coluna ENDPOINTS deve estar **vazia** (<none>). Esta é a sua grande pista! O Service não encontrou nenhum Pod para enviar tráfego."
+        tips:
+          - type: "warning"
+            title: "Endpoints Vazios = Problema de Seletor"
+            content: "Em 99% dos casos, se você tem Pods saudáveis mas a lista de Endpoints do seu Service está vazia, o problema é uma incompatibilidade entre o `selector` do Service e os `labels` dos seus Pods."
+        validation:
+          - command: "kubectl get endpoints meu-servico -n servico-fantasma -o jsonpath='{.subsets}' 2>/dev/null || echo '<none>'"
+            expectedOutput: "<none>"
+            errorMessage: "A lista de Endpoints não está vazia como esperado. O erro de digitação no seletor pode não ter sido aplicado corretamente."
+
+      - name: "O Desafio: Restaure a Conexão"
+        description: "Com todas as pistas em mãos, agora é sua vez de aplicar a solução. Corrija o problema para que o Service encontre os Pods e a comunicação seja restabelecida."
+        steps:
+          - "Detetive, a investigação está completa. Você descobriu que o selector do Service não existe ao label dos Pods (app=minha-app)."
+          - "**Seu desafio é:** Corrigir essa incompatibilidade. Você deve fazer com que o Service meu-servico encontre os Pods do minha-app-deployment."
+          - "Quando o Service tiver pelo menos um endpoint listado, a validação será bem-sucedida."
+        tips:
+          - type: "tip"
+            title: "Como Corrigir?"
+            content: "Você pode corrigir o `selector` do Service ou o `label` dos Pods. A forma mais comum é corrigir o Service. Use `kubectl edit service ...` ou modifique seu arquivo YAML e aplique novamente com `kubectl apply -f ...`."
+        validation:
+          - command: "kubectl get endpoints meu-servico -n servico-fantasma -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null | grep -q '.' && echo 'Endpoints preenchidos' || echo 'Endpoints vazios'"
+            expectedOutput: "Endpoints preenchidos"
+            errorMessage: "Os Endpoints do serviço ainda estão vazios. A incompatibilidade entre o label e o seletor ainda não foi corrigida."

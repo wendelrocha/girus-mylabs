@@ -1,0 +1,162 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-troubleshooting-crashloop-completo-lab
+  namespace: girus
+  labels:
+    app: girus-lab-template
+data:
+  lab.yaml: |
+    name: kubernetes-troubleshooting-crashloop-completo
+    title: "Caso Solucionado: O Mistério do Pod em CrashLoopBackOff"
+    description: "Aprenda a investigar e resolver o erro mais comum do Kubernetes, o CrashLoopBackOff. Neste laboratório, você atuará como um detetive, usando ferramentas como 'kubectl describe' e 'kubectl logs' para encontrar a causa raiz de um Pod que se recusa a iniciar e aplicar a correção."
+    duration: 25m
+    image: "linuxtips/girus-kind-single-node:0.1"
+    privileged: true
+    tasks:
+      - name: "Cena do Crime: Criando o Pod com Falha"
+        description: "Nesta primeira etapa, vamos reproduzir o cenário de um Pod que entra em CrashLoopBackOff. Criaremos um Deployment com uma falha intencional para simular um problema real."
+        steps:
+          - "Bem-vindo, detetive! Sua missão é resolver o mistério do Pod que não quer viver. Primeiro, vamos preparar a cena do crime."
+          - "Vamos criar um namespace isolado para nossa investigação:"
+          - "`kubectl create namespace misterio-crashloop`"
+          - "Agora, crie um arquivo chamado deployment-falho.yaml. Este manifesto descreve uma aplicação que precisa de uma senha de banco de dados, mas nós 'esqueceremos' de fornecê-la."
+          - |
+            ```
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: app-misteriosa
+              namespace: misterio-crashloop
+            spec:
+              replicas: 1
+              selector:
+                matchLabels:
+                  app: misteriosa
+              template:
+                metadata:
+                  labels:
+                    app: misteriosa
+                spec:
+                  containers:
+                  - name: app
+                    image: linuxtips/crash-app:0.1
+                    env:
+                    - name: PORT
+                      value: "8080"
+            ```
+          - "Com o manifesto criado, vamos aplicar a configuração no cluster:"
+          - "`kubectl apply -f deployment-falho.yaml`"
+          - "Agora, vamos observar o status do nosso Pod. Aguarde alguns instantes e execute o comando abaixo para acompanhar as mudanças em tempo real."
+          - "`kubectl get pods -n misterio-crashloop -w`"
+          - "Observe a saída. Você verá o temido status CrashLoopBackOff e o número de reinicializações (RESTARTS) aumentando. O Kubernetes está tentando iniciar o container, mas ele falha repetidamente. Pressione Ctrl+C para sair do modo de observação."
+        tips:
+          - type: "info"
+            title: "O que é CrashLoopBackOff?"
+            content: "Este não é um erro, mas um status. O Kubernetes está informando que a aplicação dentro do seu container está falhando ao iniciar ou travando. O trabalho dele é tentar de novo, criando um loop."
+          - type: "warning"
+            title: "Paciência, Detetive"
+            content: "Pode levar de 30 segundos a um minuto para o status mudar de ContainerCreating ou Error para CrashLoopBackOff. Isso ocorre porque o Kubernetes espera um tempo (back-off) antes de tentar reiniciar o Pod."
+        validation:
+          - command: "kubectl get pods -n misterio-crashloop -l app=misteriosa | grep -q 'CrashLoopBackOff' && echo 'CrashLoopBackOff' || echo 'Not Found'"
+            expectedOutput: "CrashLoopBackOff"
+            errorMessage: "O Pod não entrou em CrashLoopBackOff como esperado. Verifique se o deployment foi criado corretamente no namespace 'misterio-crashloop'."
+
+      - name: "Pista 1: A Autópsia do Pod com describe"
+        description: "Use a ferramenta kubectl describe para coletar as primeiras pistas vitais sobre o motivo da falha, como o código de saída e os eventos do ciclo de vida do Pod."
+        steps:
+          - "Nossa primeira ferramenta de investigação é o kubectl describe. Ele nos dá um dossiê completo do Pod, quase uma 'autópsia' do que aconteceu."
+          - "Primeiro, vamos pegar o nome exato do nosso Pod problemático e armazená-lo em uma variável para facilitar:"
+          - "`POD_NAME=$(kubectl get pods -n misterio-crashloop -l app=misteriosa -o jsonpath='{.items[0].metadata.name}')`"
+          - "Agora, vamos usar o describe para investigar:"
+          - "`kubectl describe pod $POD_NAME -n misterio-crashloop`"
+          - "Analise a saída com atenção. Duas seções são cruciais:"
+          - "1. State / Last State: Perto do topo, dentro da descrição do container, você verá o estado atual (State: Waiting) e o estado anterior (Last State: Terminated). Observe o Exit Code. Um código diferente de 0 indica uma falha. No nosso caso, deve ser Exit Code: 1."
+          - "2. Events: No final da saída, a seção de eventos é a linha do tempo do crime. Você verá eventos como Pulling, Pulled, Created, Started e, o mais importante, Back-off restarting failed container. Isso confirma o loop de reinicialização."
+          - "A pista do Exit Code: 1 nos diz que a aplicação terminou com um erro genérico. Agora precisamos descobrir que erro foi esse."
+        tips:
+          - type: "info"
+            title: "Exit Codes Comuns"
+            content: "Exit Code 1 geralmente significa um erro não tratado na aplicação. Exit Code 137 indica que o processo foi terminado por um sinal externo, frequentemente por exceder o limite de memória (OOMKilled). Exit Code 139 indica uma falha de segmentação."
+          - type: "tip"
+            title: "Filtrando a Saída"
+            content: "Para encontrar rapidamente a seção de eventos, você pode usar kubectl describe pod $POD_NAME -n misterio-crashloop | grep -A 10 Events."
+        validation:
+          - command: "POD_NAME=$(kubectl get pods -n misterio-crashloop -l app=misteriosa -o jsonpath='{.items.metadata.name}'); kubectl describe pod $POD_NAME -n misterio-crashloop | grep 'Exit Code:' | awk '{print $3}' | tail -n 1"
+            expectedOutput: "1"
+            errorMessage: "O Exit Code do container não é 1. Verifique a saída do comando describe."
+
+      - name: "Pista 2: As Últimas Palavras com logs --previous"
+        description: "Investigue os logs do container para encontrar a mensagem de erro exata que está causando a falha, usando a flag --previous para acessar os logs da última tentativa."
+        steps:
+          - "Sabemos que a aplicação falhou. Agora, precisamos ouvir suas 'últimas palavras': os logs."
+          - "Se tentarmos obter os logs do container atual, podemos não ver nada, pois ele pode ter falhado antes de gerar qualquer saída:"
+          - "`kubectl logs $POD_NAME -n misterio-crashloop`"
+          - "A mágica do detetive de Kubernetes é usar a flag --previous. Ela nos mostra os logs da última vez que o container tentou executar, antes de falhar."
+          - "`kubectl logs $POD_NAME -n misterio-crashloop --previous`"
+        tips:
+          - type: "warning"
+            title: "Por que --previous?"
+            content: "Quando um container está em CrashLoopBackOff, o container atual está em um estado de espera. Os logs que importam são os da execução anterior que falhou. A flag '--previous' é essencial para depurar esses cenários."
+          - type: "tip"
+            title: "E se não houver logs?"
+            content: "Se mesmo com --previous os logs estiverem vazios, o problema pode ser na inicialização do container (ex: erro no entrypoint do Dockerfile) ou uma falha de Liveness Probe mal configurada, que mata o container antes que ele possa logar algo."
+        validation:
+          - command: "POD_NAME=$(kubectl get pods -n misterio-crashloop -l app=misteriosa -o jsonpath='{.items.metadata.name}'); kubectl describe pod $POD_NAME -n misterio-crashloop | grep 'Exit Code:' | awk '{print $3}' | tail -n 1"
+            expectedOutput: "1"
+            errorMessage: "O Exit Code do container não é 1. Verifique a saída do comando describe."
+
+      - name: "A Solução: Corrigindo o Deployment"
+        description: "Aplique a correção no Deployment, fornecendo a variável de ambiente que faltava através de um Secret do Kubernetes, e veja o Pod iniciar com sucesso."
+        steps:
+          - "Com a causa raiz descoberta, é hora de aplicar a solução. A aplicação precisa da variável DB_PASSWORD. Em Kubernetes, a forma correta de gerenciar informações sensíveis como senhas é usando Secrets."
+          - "Vamos criar um Secret contendo a senha que a aplicação espera:"
+          - "`kubectl create secret generic db-secret --from-literal=DB_PASSWORD='Girus@LINUXtips#2025' -n misterio-crashloop`"
+          - "Agora, vamos corrigir nosso manifesto. Crie um novo arquivo deployment-corrigido.yaml referenciando o Secret que acabamos de criar."
+          - |
+            ```
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: app-misteriosa
+              namespace: misterio-crashloop
+            spec:
+              replicas: 1
+              selector:
+                matchLabels:
+                  app: misteriosa
+              template:
+                metadata:
+                  labels:
+                    app: misteriosa
+                spec:
+                  containers:
+                  - name: app
+                    image: linuxtips/crash-app:0.1
+                    env:
+                    - name: PORT
+                      value: "8080"
+                    - name: DB_PASSWORD
+                      valueFrom:
+                        secretKeyRef:
+                          name: db-secret
+                          key: DB_PASSWORD
+            ```
+          - "Agora, aplique o manifesto corrigido. O Kubernetes fará uma atualização gradual (rolling update), substituindo o Pod com falha por um novo com a configuração correta."
+          - "`kubectl apply -f deployment-corrigido.yaml`"
+          - "Acompanhe o status da atualização:"
+          - "`kubectl rollout status deployment/app-misteriosa -n misterio-crashloop`"
+          - "Finalmente, verifique o status dos Pods. O Pod antigo será terminado e um novo será criado. Este novo Pod deve estar no estado Running."
+          - "`kubectl get pods -n misterio-crashloop`"
+          - "Caso resolvido! O Pod agora tem a variável de ambiente de que precisa e está vivendo feliz no cluster."
+        tips:
+          - type: "info"
+            title: "Secrets vs ConfigMaps"
+            content: "Use Secrets para dados sensíveis como senhas, tokens e chaves de API. Use ConfigMaps para dados de configuração não sensíveis. Ambos podem ser injetados como variáveis de ambiente ou arquivos."
+          - type: "tip"
+            title: "Atualizando Deployments"
+            content: "Ao aplicar um manifesto com o mesmo nome de um recurso existente, o Kubernetes compara as especificações e aplica apenas as mudanças, geralmente criando novos Pods e desativando os antigos de forma segura."
+        validation:
+          - command: "kubectl get deployment app-misteriosa -n misterio-crashloop -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo '0'"
+            expectedOutput: "1"
+            errorMessage: "O Deployment app-misteriosa ainda não tem uma réplica pronta. Use describe no novo Pod para investigar."

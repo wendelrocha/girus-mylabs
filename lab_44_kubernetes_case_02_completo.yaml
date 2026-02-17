@@ -1,0 +1,155 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-troubleshooting-service-completo-lab
+  namespace: girus
+  labels:
+    app: girus-lab-template
+data:
+  lab.yaml: |
+    name: kubernetes-troubleshooting-service-completo
+    title: "Caso Solucionado: O Mistério do Serviço Indisponível"
+    description: "Neste laboratório guiado, você aprenderá a diagnosticar e resolver problemas de conectividade no Kubernetes, entendendo a relação crucial entre Services, Labels e Selectors para garantir que sua aplicação seja sempre acessível."
+    duration: 20m
+    image: "linuxtips/girus-kind-single-node:0.1"
+    privileged: true
+    tasks:
+      - name: "A Cena do Crime: A Aplicação Fantasma"
+        description: "Vamos criar um cenário onde os Pods estão perfeitamente saudáveis, mas o Serviço não consegue encontrá-los, tornando a aplicação inacessível."
+        steps:
+          - "Bem-vindo de volta, detetive! Desta vez, o mistério é diferente: os Pods estão vivos e bem, mas a aplicação está incomunicável, como um fantasma na rede."
+          - "Vamos criar um novo namespace para esta investigação:"
+          - "`kubectl create namespace servico-fantasma`"
+          - "Agora, crie um arquivo chamado `app-com-erro.yaml` usando seu editor de texto. Este manifesto contém um erro intencional: o Service não tem um `selector` para encontrar os Pods."
+          - |
+            ```
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: minha-app-deployment
+              namespace: servico-fantasma
+            spec:
+              replicas: 2
+              selector:
+                matchLabels:
+                  app: minha-app
+              template:
+                metadata:
+                  labels:
+                    app: minha-app
+                spec:
+                  containers:
+                  - name: web
+                    image: nginx
+                    ports:
+                    - containerPort: 80
+            ---
+            apiVersion: v1
+            kind: Service
+            metadata:
+              name: meu-servico
+              namespace: servico-fantasma
+            spec:
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
+            ```
+          - "Com o manifesto criado, vamos aplicar a configuração no cluster:"
+          - "`kubectl apply -f app-com-erro.yaml`"
+          - "Agora, verifique o status dos Pods. Eles devem estar perfeitamente saudáveis."
+          - "`kubectl get pods -n servico-fantasma`"
+          - "Apesar dos Pods estarem 'Running', a aplicação está inacessível. A investigação começa agora."
+        validation:
+          - command: "kubectl get pods -n servico-fantasma -l app=minha-app --no-headers | wc -l"
+            expectedOutput: "2"
+            errorMessage: "O Deployment não criou as 2 réplicas esperadas. Verifique o manifesto."
+
+      - name: "Pista 1: O Porteiro Desatento (Service e Endpoints)"
+        description: "Investigue o Service e seus Endpoints para descobrir por que ele não está direcionando tráfego para os Pods."
+        steps:
+          - "O `Service` atua como o porteiro da nossa aplicação. Se ninguém consegue entrar, a primeira coisa a fazer é falar com o porteiro."
+          - "A pista crucial está nos **Endpoints**. Um objeto `Endpoint` é criado automaticamente para cada `Service` e contém a lista de IPs e portas dos Pods que correspondem ao seletor do Service."
+          - "Vamos verificar os endpoints do nosso serviço:"
+          - "`kubectl get endpoints meu-servico -n servico-fantasma`"
+          - "Analise a saída. A coluna `ENDPOINTS` deve estar **vazia** (`<none>`)."
+          - "**Esta é a nossa grande pista!** Se os endpoints estão vazios, significa que o Service não encontrou **nenhum** Pod que corresponda ao seu critério de seleção."
+        tips:
+          - type: "warning"
+            title: "Endpoints Vazios = Problema de Seletor"
+            content: "Em 99% dos casos, se você tem Pods saudáveis mas a lista de Endpoints do seu Service está vazia, o problema é uma incompatibilidade (ou ausência) entre o `selector` do Service e os `labels` dos seus Pods."
+        validation:
+          - command: "kubectl get endpoints meu-servico -n servico-fantasma -o jsonpath='{.subsets}' 2>/dev/null || echo '<none>'"
+            expectedOutput: "<none>"
+            errorMessage: "A lista de Endpoints não está vazia como esperado. O erro no manifesto pode não ter sido aplicado corretamente."
+
+      - name: "Pista 2: O Crachá Faltante (Labels e Selectors)"
+        description: "Compare os labels dos Pods com a configuração do Service para confirmar a causa do problema."
+        steps:
+          - "Sabemos que o Service não está encontrando os Pods. A conexão entre eles é feita por `Labels` (nos Pods) e `Selectors` (no Service)."
+          - "Primeiro, vamos confirmar os `labels` que nossos Pods possuem:"
+          - "`kubectl get pods -n servico-fantasma --show-labels`"
+          - "Observe que nossos Pods têm o label `app=minha-app`."
+          - "Agora, vamos verificar qual `selector` nosso Service está usando. Use o comando `describe`:"
+          - "`kubectl describe service meu-servico -n servico-fantasma`"
+          - "Procure pela linha `Selector`. Ela deve estar como `<none>`."
+          - "**Caso encerrado!** O Service não tem um seletor definido, então ele não sabe quais Pods procurar. É como um porteiro que não recebeu a lista de convidados."
+        tips:
+          - type: "info"
+            title: "A Chave da Comunicação"
+            content: "Labels e Selectors são um dos conceitos mais fundamentais do Kubernetes. Eles desacoplam os componentes, permitindo que o sistema funcione de forma dinâmica. Dominar essa relação é essencial."
+        validation:
+          - command: "kubectl describe service meu-servico -n servico-fantasma | grep 'Selector:' | awk '{print $2}'"
+            expectedOutput: "<none>"
+            errorMessage: "O seletor do Service não está como '<none>'. Verifique se o manifesto com o erro foi aplicado corretamente."
+
+      - name: "A Solução: Corrigindo a Conexão"
+        description: "Aplique a correção no Service, adicionando o seletor correto para que ele corresponda aos labels dos Pods e restabeleça a comunicação."
+        steps:
+          - "Com a causa raiz descoberta, a solução é adicionar o `selector` que falta ao nosso Service."
+          - "Crie um novo arquivo `app-corrigido.yaml`. Ele será idêntico ao anterior, mas com a adição da seção `selector` no Service, apontando para o label correto."
+          - |
+            ```
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: minha-app-deployment
+              namespace: servico-fantasma
+            spec:
+              replicas: 2
+              selector:
+                matchLabels:
+                  app: minha-app
+              template:
+                metadata:
+                  labels:
+                    app: minha-app
+                spec:
+                  containers:
+                  - name: web
+                    image: nginx
+                    ports:
+                    - containerPort: 80
+            ---
+            apiVersion: v1
+            kind: Service
+            metadata:
+              name: meu-servico
+              namespace: servico-fantasma
+            spec:
+              selector:
+                app: minha-app # ADICIONADO E CORRIGIDO!
+              ports:
+                - protocol: TCP
+                  port: 80
+                  targetPort: 80
+            ```
+          - "Agora, aplique o manifesto corrigido. O Kubernetes é inteligente e apenas atualizará o objeto Service que foi modificado."
+          - "`kubectl apply -f app-corrigido.yaml`"
+          - "Vamos verificar os endpoints novamente. Desta vez, eles devem estar preenchidos!"
+          - "`kubectl get endpoints meu-servico -n servico-fantasma`"
+          - "Com os endpoints corretos, a comunicação está estabelecida. Mistério resolvido!"
+        validation:
+          - command: "kubectl get endpoints meu-servico -n servico-fantasma -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null | grep -q '.' && echo 'Endpoints preenchidos' || echo 'Endpoints vazios'"
+            expectedOutput: "Endpoints preenchidos"
+            errorMessage: "Os Endpoints do serviço ainda estão vazios. Verifique se o seletor 'app: minha-app' foi adicionado corretamente ao Service."

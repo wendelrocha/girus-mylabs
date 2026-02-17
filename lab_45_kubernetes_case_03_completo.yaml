@@ -1,0 +1,165 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-troubleshooting-configmap-completo-lab
+  namespace: girus
+  labels:
+    app: girus-lab-template
+data:
+  lab.yaml: |
+    name: kubernetes-troubleshooting-configmap-completo
+    title: "Caso Solucionado: O Mistério da Configuração Fantasma"
+    description: "Neste laboratório, você vai investigar por que as alterações em um ConfigMap não são refletidas em uma aplicação, aprendendo a diferença crucial entre injetar configurações como variáveis de ambiente e como volumes."
+    duration: 20m
+    image: "linuxtips/girus-kind-single-node:0.1"
+    privileged: true
+    tasks:
+      - name: "A Cena do Crime: A Configuração Ignorada"
+        description: "Vamos criar um cenário com uma aplicação configurada via ConfigMap e tentar alterar sua configuração em tempo de execução, apenas para ver nossa mudança ser ignorada."
+        steps:
+          - "Bem-vindo ao nosso último caso, detetive! Desta vez, o mistério é uma configuração fantasma: você muda um parâmetro, mas a aplicação se recusa a enxergar a nova realidade."
+          - "Vamos criar um namespace para a investigação:"
+          - "`kubectl create namespace config-fantasma`"
+          - "Agora, crie um arquivo app-configurada.yaml. Este manifesto cria um ConfigMap, e um Deployment que consome esse ConfigMap como **variáveis de ambiente**."
+          - |
+            ```
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: app-config
+              namespace: config-fantasma
+            data:
+              LOG_LEVEL: "INFO"
+            ---
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: minha-app
+              namespace: config-fantasma
+            spec:
+              replicas: 1
+              selector:
+                matchLabels:
+                  app: minha-app
+              template:
+                metadata:
+                  labels:
+                    app: minha-app
+                spec:
+                  containers:
+                  - name: app
+                    image: linuxtips/config-reader-app:0.1
+                    envFrom:
+                    - configMapRef:
+                        name: app-config
+            ```
+          - "Aplique o manifesto para criar os recursos:"
+          - "`kubectl apply -f app-configurada.yaml`"
+          - "Vamos verificar os logs da aplicação para ver qual nível de log ela está usando na inicialização."
+          - "`kubectl logs -n config-fantasma -l app=minha-app`"
+          - "A saída deve mostrar: Nível de Log atual: INFO. Até aqui, tudo certo."
+        tips:
+          - type: "info"
+            title: "ConfigMap e envFrom"
+            content: "A seção envFrom com configMapRef é uma forma conveniente de injetar todas as chaves de um ConfigMap como variáveis de ambiente em um Pod."
+        validation:
+          - command: "kubectl logs -n config-fantasma -l app=minha-app | grep -q 'Nível de Log atual: INFO' && echo 'Encontrado' || echo 'Não encontrado'"
+            expectedOutput: "Encontrado"
+            errorMessage: "A aplicação não parece ter iniciado com o nível de log 'INFO'. Verifique os logs e o manifesto."
+
+      - name: "A Tentativa de Mudança e a Frustração"
+        description: "Vamos alterar o ConfigMap e observar que a aplicação em execução não reflete a mudança, revelando a natureza do problema."
+        steps:
+          - "Agora, vamos tentar mudar o nível de log para DEBUG. A forma mais rápida de editar um recurso é com o comando kubectl edit."
+          - "`kubectl edit configmap app-config -n config-fantasma`"
+          - "Seu editor de texto abrirá. Altere a linha LOG_LEVEL: \"INFO\" para LOG_LEVEL: \"DEBUG\" e salve o arquivo."
+          - "O ConfigMap foi atualizado. A lógica diz que a aplicação deveria mudar seu comportamento, certo? Vamos verificar os logs novamente."
+          - "`kubectl logs -n config-fantasma -l app=minha-app`"
+          - "Observe a saída. A aplicação **não** reiniciou e **não** há novos logs mostrando o nível DEBUG. Ela continua com a configuração fantasma do passado. Por quê?"
+          - "**Esta é a pista principal:** O Kubernetes não atualiza variáveis de ambiente em Pods que já estão em execução. Elas são injetadas apenas uma vez, no momento da criação do container."
+        tips:
+          - type: "warning"
+            title: "Imutabilidade das Variáveis de Ambiente"
+            content: "Uma vez que um Pod está rodando, suas variáveis de ambiente são imutáveis. Mudar o ConfigMap de origem não terá efeito sobre ele. Esta é uma característica fundamental do design do Kubernetes."
+        validation:
+          - command: "kubectl get configmap app-config -n config-fantasma -o jsonpath='{.data.LOG_LEVEL}'"
+            expectedOutput: "DEBUG"
+            errorMessage: "O ConfigMap não foi atualizado para 'DEBUG'. Use 'kubectl edit' para alterar o valor."
+          - command: "kubectl logs -n config-fantasma -l app=minha-app | grep -q 'Nível de Log atual: DEBUG' && echo 'Atualizou' || echo 'Não atualizou'"
+            expectedOutput: "Não atualizou"
+            errorMessage: "A aplicação refletiu a mudança, o que não era esperado. A validação busca confirmar que a mudança NÃO acontece automaticamente."
+
+      - name: "A Solução Parte 1: Forçando a Atualização"
+        description: "Aprenda a forçar a recriação dos Pods para que eles leiam a nova versão do ConfigMap, a solução para configurações baseadas em variáveis de ambiente."
+        steps:
+          - "Sabendo que as variáveis de ambiente não são atualizadas dinamicamente, a única forma de fazer o Pod enxergar a nova configuração é recriá-lo."
+          - "A maneira mais elegante e controlada de fazer isso em um Deployment é com o comando rollout restart."
+          - "`kubectl rollout restart deployment minha-app -n config-fantasma`"
+          - "Este comando aciona uma atualização gradual (rolling update), criando um novo Pod com a configuração atualizada e terminando o antigo."
+          - "Acompanhe o status da atualização:"
+          - "`kubectl rollout status deployment minha-app -n config-fantasma`"
+          - "Quando o novo Pod estiver pronto, verifique seus logs:"
+          - "`kubectl logs -n config-fantasma -l app=minha-app`"
+          - "Agora sim! O novo Pod, ao iniciar, leu a versão atualizada do ConfigMap e a saída mostrará: Nível de Log atual: DEBUG."
+        validation:
+          - command: "kubectl logs -n config-fantasma -l app=minha-app | grep -q 'Nível de Log atual: DEBUG' && echo 'Encontrado' || echo 'Não encontrado'"
+            expectedOutput: "Encontrado"
+            errorMessage: "A aplicação no novo Pod não iniciou com o nível de log 'DEBUG'. Verifique se o rollout foi concluído."
+
+      - name: "A Solução Parte 2: A Abordagem Correta com Volumes"
+        description: "Aprenda a montar ConfigMaps como volumes, uma abordagem mais avançada que permite atualizações quase em tempo real sem reiniciar os Pods."
+        steps:
+          - "Forçar um reinício funciona, mas não é o ideal. A melhor prática é montar o ConfigMap como um volume. Desta forma, o Kubernetes atualiza o arquivo montado dentro do Pod automaticamente."
+          - "Vamos criar um novo manifesto, app-com-volume.yaml, que usa essa abordagem."
+          - |
+            ```
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: app-config-volume
+              namespace: config-fantasma
+            data:
+              LOG_LEVEL: "INFO"
+            ---
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: minha-app-volume
+              namespace: config-fantasma
+            spec:
+              replicas: 1
+              selector:
+                matchLabels:
+                  app: minha-app-volume
+              template:
+                metadata:
+                  labels:
+                    app: minha-app-volume
+                spec:
+                  containers:
+                  - name: app
+                    image: linuxtips/config-reader-app:0.1
+                    volumeMounts:
+                    - name: config-volume
+                      mountPath: /etc/config
+                  volumes:
+                  - name: config-volume
+                    configMap:
+                      name: app-config-volume
+            ```
+          - "Aplique o novo manifesto:"
+          - "`kubectl apply -f app-com-volume.yaml`"
+          - "Agora, vamos editar o novo ConfigMap app-config-volume para DEBUG:"
+          - "`kubectl edit configmap app-config-volume -n config-fantasma`"
+          - "Aguarde cerca de um minuto para o Kubelet sincronizar a mudança. Depois, entre no Pod e verifique o conteúdo do arquivo montado:"
+          - "`POD_NAME_VOL=$(kubectl get pods -n config-fantasma -l app=minha-app-volume -o jsonpath='{.items[0].metadata.name}')`"
+          - "`kubectl exec $POD_NAME_VOL -n config-fantasma -- cat /etc/config/LOG_LEVEL`"
+          - "A saída deve ser DEBUG. O arquivo foi atualizado dinamicamente, sem reiniciar o Pod! Mistério resolvido, e com uma solução ainda melhor."
+        tips:
+          - type: "info"
+            title: "Atualização de Volume"
+            content: "O Kubelet verifica periodicamente as mudanças nos ConfigMaps montados e atualiza os arquivos. Esse processo pode levar até um minuto. A aplicação ainda precisa ser capaz de detectar a mudança no arquivo para que isso seja 100% dinâmico."
+        validation:
+          - command: "POD_NAME_VOL=$(kubectl get pods -n config-fantasma -l app=minha-app-volume -o jsonpath='{.items.metadata.name}'); kubectl exec $POD_NAME_VOL -n config-fantasma -- cat /etc/config/LOG_LEVEL 2>/dev/null || echo ''"
+            expectedOutput: "DEBUG"
+            errorMessage: "O arquivo montado a partir do ConfigMap não foi atualizado para 'DEBUG'. Aguarde um minuto e tente novamente."

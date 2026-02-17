@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-misteriosa
+  namespace: misterio-crashloop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: misteriosa
+  template:
+    metadata:
+      labels:
+        app: misteriosa
+    spec:
+      containers:
+        - name: app
+          image: linuxtips/crash-app:0.1
+          env:
+            - name: PORT
+              value: "8080"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: DB_PASSWORD

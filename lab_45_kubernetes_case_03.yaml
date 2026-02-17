@@ -1,0 +1,105 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-troubleshooting-configmap-challenge
+  namespace: girus
+  labels:
+    app: girus-lab-template
+data:
+  lab.yaml: |
+    name: kubernetes-troubleshooting-configmap-challenge
+    title: "Desafio: O Mistério da Configuração Fantasma"
+    description: "Uma alteração de configuração é ignorada pela sua aplicação. Neste desafio, você deve investigar por que isso acontece e aplicar a solução correta para que o Pod utilize a nova configuração."
+    duration: 20m
+    timerEnabled: true
+    maxDuration: 20m
+    image: "linuxtips/girus-kind-single-node:0.1"
+    privileged: true
+    tasks:
+      - name: "A Cena do Crime: A Configuração Ignorada"
+        description: "Vamos criar um cenário com uma aplicação configurada via ConfigMap e tentar alterar sua configuração em tempo de execução, apenas para ver nossa mudança ser ignorada."
+        steps:
+          - "Bem-vindo ao nosso último caso, detetive! Desta vez, o mistério é uma configuração fantasma: você muda um parâmetro, mas a aplicação se recusa a enxergar a nova realidade."
+          - "Vamos criar um namespace para a investigação:"
+          - "`kubectl create namespace config-fantasma`"
+          - "Agora, crie um arquivo `app-configurada.yaml`. Este manifesto cria um ConfigMap e um Deployment que consome esse ConfigMap como **variáveis de ambiente**."
+          - |
+            ```
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: app-config
+              namespace: config-fantasma
+            data:
+              LOG_LEVEL: "INFO"
+            ---
+            apiVersion: apps/v1
+            kind: Deployment
+            metadata:
+              name: minha-app
+              namespace: config-fantasma
+            spec:
+              replicas: 1
+              selector:
+                matchLabels:
+                  app: minha-app
+              template:
+                metadata:
+                  labels:
+                    app: minha-app
+                spec:
+                  containers:
+                  - name: app
+                    image: linuxtips/config-reader-app:0.1
+                    envFrom:
+                    - configMapRef:
+                        name: app-config
+            ```
+          - "Aplique o manifesto para criar os recursos:"
+          - "`kubectl apply -f app-configurada.yaml`"
+          - "Verifique os logs da aplicação para confirmar que ela iniciou com o nível de log INFO."
+          - "`kubectl logs -n config-fantasma -l app=minha-app`"
+        validation:
+          - command: "kubectl logs -n config-fantasma -l app=minha-app | grep -q 'Nível de Log atual: INFO' && echo 'Encontrado' || echo 'Não encontrado'"
+            expectedOutput: "Encontrado"
+            errorMessage: "A aplicação não parece ter iniciado com o nível de log 'INFO'. Verifique os logs e o manifesto."
+
+      - name: "A Pista: A Tentativa de Mudança"
+        description: "Altere o ConfigMap e observe que a aplicação em execução não reflete a mudança, revelando a natureza do problema."
+        steps:
+          - "Agora, vamos tentar mudar o nível de log para DEBUG. Use o comando `kubectl edit` para alterar o ConfigMap."
+          - "`kubectl edit configmap app-config -n config-fantasma`"
+          - "No seu editor, altere o valor de LOG_LEVEL de \"INFO\" para \"DEBUG\" e salve o arquivo."
+          - "O ConfigMap foi atualizado. Agora, verifique os logs da aplicação novamente:"
+          - "`kubectl logs -n config-fantasma -l app=minha-app`"
+          - "Observe que a aplicação **não** reiniciou e **não** está usando o novo nível de log. Esta é sua pista principal: as variáveis de ambiente em Pods em execução são imutáveis."
+        tips:
+          - type: "warning"
+            title: "Imutabilidade das Variáveis de Ambiente"
+            content: "Uma vez que um Pod está rodando, suas variáveis de ambiente são imutáveis. Mudar o ConfigMap de origem não terá efeito sobre ele. Esta é uma característica fundamental do design do Kubernetes."
+        validation:
+          - command: "kubectl get configmap app-config -n config-fantasma -o jsonpath='{.data.LOG_LEVEL}'"
+            expectedOutput: "DEBUG"
+            errorMessage: "O ConfigMap não foi atualizado para 'DEBUG'. Use 'kubectl edit' para alterar o valor."
+          - command: "kubectl logs -n config-fantasma -l app=minha-app | grep -q 'Nível de Log atual: DEBUG' && echo 'Atualizou' || echo 'Não atualizou'"
+            expectedOutput: "Não atualizou"
+            errorMessage: "A aplicação refletiu a mudança, o que não era esperado. A validação busca confirmar que a mudança NÃO acontece automaticamente."
+
+      - name: "O Desafio: Force a Nova Realidade"
+        description: "Com a pista em mãos, seu desafio é fazer com que a aplicação passe a usar a configuração atualizada do ConfigMap."
+        steps:
+          - "Detetive, a investigação revelou o problema: a aplicação está presa à configuração antiga porque foi carregada via variáveis de ambiente."
+          - "**Seu desafio é:** Fazer com que o Pod do Deployment `minha-app` utilize a nova configuração e passe a rodar com o nível de log DEBUG."
+          - "Você precisa encontrar uma maneira de forçar o Pod a recarregar sua configuração a partir da versão atualizada do ConfigMap."
+          - "Quando os logs do Pod mostrarem que ele está rodando com o nível de log DEBUG, a validação será bem-sucedida."
+        tips:
+          - type: "tip"
+            title: "Como Forçar uma Atualização?"
+            content: "Se as variáveis de ambiente são definidas na criação do Pod, como você pode forçar a criação de um novo Pod que leia os novos valores? Pense em como os Deployments gerenciam atualizações."
+          - type: "info"
+            title: "Outras Abordagens"
+            content: "Além de forçar um reinício, lembre-se que montar o ConfigMap como um volume é outra forma de lidar com configurações. Talvez você queira experimentar essa abordagem também!"
+        validation:
+          - command: "kubectl logs -n config-fantasma -l app=minha-app | grep -q 'Nível de Log atual: DEBUG' && echo 'Encontrado' || echo 'Não encontrado'"
+            expectedOutput: "Encontrado"
+            errorMessage: "A aplicação ainda não está rodando com o nível de log 'DEBUG'. A solução ainda não foi aplicada corretamente."
